@@ -32,12 +32,8 @@ def pinball_loss(pred, target, tau, dist_side):
     if dist_side == 'both':
         pred_down = pred[:, :, 0]
         pred_up = pred[:, :, 1]
-        print('pred_down', pred_down)
-        print('pred_up', pred_up)
         loss_up = torch.max((tau * (target - pred_up)), ((tau - 1) * (target - pred_up)))
-        print('loss up', loss_up)
         loss_down = torch.max((tau * (pred_down - target)), ((tau - 1) * (pred_down - target)))
-        print('loss down', loss_down)
         loss = torch.mean(loss_up + loss_down)
     elif dist_side == 'up':
         loss = torch.max((tau * (target - pred)), ((tau - 1) * (target - pred)))

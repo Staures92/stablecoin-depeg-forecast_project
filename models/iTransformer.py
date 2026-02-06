@@ -116,7 +116,6 @@ class iTransformer(L.LightningModule):
 
         outputs = self.model(batch_x)
         loss = self.criterion(outputs, batch_y)
-        print(loss)
         self.log('train_loss', loss)
         return loss
     
