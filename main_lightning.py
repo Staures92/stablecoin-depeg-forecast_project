@@ -6,7 +6,7 @@ from torch import nn
 import torch.nn.functional as F
 import lightning as L
 from lightning.pytorch import seed_everything
-from lightning.pytorch.loggers import MLFlowLogger
+from lightning.pytorch.loggers import MLFlowLogger, TensorBoardLogger
 from lightning.pytorch.callbacks import ModelCheckpoint, EarlyStopping, LearningRateMonitor, Callback
 from dotenv import load_dotenv
 from lightning.pytorch.tuner import Tuner
@@ -17,8 +17,6 @@ from utils.build_dataset import build_dataset
 from data_loader.DataModules import DataModule_forecast, DataModule_earlywarning
 
 load_dotenv()
-os.environ["MLFLOW_TRACKING_USERNAME"] = os.getenv("MLFLOW_TRACKING_USERNAME")
-os.environ["MLFLOW_TRACKING_PASSWORD"] = os.getenv("MLFLOW_TRACKING_PASSWORD")
 
 CUDA_LAUNCH_BLOCKING=1.
 
@@ -30,7 +28,9 @@ if __name__ == "__main__":
     dict_args = vars(temp_args[0])
     final_dataset_path = build_dataset(**dict_args)
 
-
+    if temp_args[0].remote_logging:
+        os.environ["MLFLOW_TRACKING_USERNAME"] = os.getenv("MLFLOW_TRACKING_USERNAME")
+        os.environ["MLFLOW_TRACKING_PASSWORD"] = os.getenv("MLFLOW_TRACKING_PASSWORD")
 
     model_dict = {
         'iTransformer':[iTransformer],
@@ -52,8 +52,11 @@ if __name__ == "__main__":
         data = DataModule_forecast(**dict_args)
     elif args.method == 'earlywarning':
         data = DataModule_earlywarning(**dict_args)
-
-    logger = MLFlowLogger(experiment_name = args.experiment_name, run_name = args.run_name, tracking_uri = os.getenv('MLFLOW_TRACKING_URI'), artifact_location = os.getenv('ARTIFACT_URI'), log_model = True)
+    if args.remote_logging:
+        logger = MLFlowLogger(experiment_name = args.experiment_name, run_name = args.run_name, tracking_uri = os.getenv('MLFLOW_TRACKING_URI'), artifact_location = os.getenv('ARTIFACT_URI'), log_model = True)
+    else:
+        logger = TensorBoardLogger(save_dir='lightning_logs', name=args.experiment_name, version=args.run_name)
+        
     checkpointing = ModelCheckpoint(monitor = 'val_loss', save_top_k = 1, mode= 'min')
     trainer = L.Trainer(
                 devices = 1, accelerator = 'gpu',  max_epochs = args.n_epochs, logger = logger, deterministic = 'warn', 
@@ -70,5 +73,3 @@ if __name__ == "__main__":
                 LModel.hparams.learning_rate = res.suggestion()
     trainer.fit(LModel, data)
     trainer.test(LModel, data, ckpt_path="best")
-    best_ckpt_path = checkpointing.best_model_path
-    LModel = model.load_from_checkpoint(best_ckpt_path)

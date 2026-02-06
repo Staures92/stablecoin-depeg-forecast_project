@@ -25,16 +25,13 @@ class DataModule_forecast(L.LightningDataModule):
         if stage == 'fit' :
             self.dataset_train = Dataset_forecast(self.dataset_path, flag = 'train', size = [self.input_len, self.pred_len, self.label_len],
                                                       split = self.split, splitval=self.splitval, scaler = None,
-                                                    exogenous=self.exogenous
                                                       )
             self.dataset_val = Dataset_forecast(self.dataset_path, flag = 'val', size = [self.input_len, self.pred_len, self.label_len], 
                                                    split = self.split,  splitval=self.splitval, scaler = None, 
-                                                   exogenous=self.exogenous
                                                    )
         if stage == 'test' :
             self.dataset_test = Dataset_forecast(self.dataset_path, flag = 'test', size = [self.input_len, self.pred_len, self.label_len],
                                                      split = self.split,  splitval=self.splitval, scaler = None,
-                                                    exogenous=self.exogenous
                                                      )
         
     def train_dataloader(self):

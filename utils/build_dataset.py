@@ -332,7 +332,7 @@ def build_dataset(
             future_min = x1.iloc[::-1].rolling(w, min_periods=1).min().iloc[::-1]
 
             dataset["target"] = ((future_max >= thr) | (future_min <= -thr)).fillna(False).astype(int)
-
+        dataset = dataset.astype('float32').ffill()
         if target:
             if not (aave and aave_liq and crv and eth_price and eth_indicators and fear_greed and gegen): 
                 if not bypass:

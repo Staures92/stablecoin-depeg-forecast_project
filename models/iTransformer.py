@@ -62,7 +62,8 @@ class Model(nn.Module):
         enc_out = self.enc_embedding(x_enc, None)
         enc_out, attns = self.encoder(enc_out, attn_mask=None)
         
-        dec_out = self.projection(enc_out).permute(0, 2, 1)[:, :, self.enc_in - 1]
+        dec_out = self.projection(enc_out).permute(0, 2, 1)
+        dec_out = self.revin(dec_out, 'denorm')[:, :, - 1]
         dec_out = dec_out.view(dec_out.size(0), self.pred_len, -1)
         return dec_out
     
@@ -80,7 +81,7 @@ class Model(nn.Module):
     def forward(self, x_enc):
         if self.method == 'forecast':
             dec_out = self.forecast(x_enc)
-            dec_out = dec_out[:, -self.pred_len:, :]  
+            dec_out = torch.squeeze(dec_out, dim=-1)
             return dec_out
         if self.method == 'earlywarning':
             class_out = self.earlywarning(x_enc)
@@ -113,8 +114,8 @@ class iTransformer(L.LightningModule):
         batch_y = batch_y.float()
 
         outputs = self.model(batch_x)
-    
         loss = self.criterion(outputs, batch_y)
+        print(loss)
         self.log('train_loss', loss)
         return loss
     
@@ -175,9 +176,6 @@ class iTransformer(L.LightningModule):
         elif method == 'earlywarning':
             criterion = nn.BCELoss()
         return criterion
-
-
-
 
     @staticmethod
     def add_model_specific_args(parent_parser):

@@ -34,6 +34,7 @@ def parse_arguments():
 
 
     model = parser.add_argument_group('Model training arguments')
+    model.add_argument('--remote_logging', action='store_true', help='whether to log to a remote MLFlow server')
     model.add_argument('--experiment_name', type=str, default='stablecoin-depeg')
     model.add_argument('--run_name', type=str, default=None)
     model.add_argument('--model_root_path', type=str, default='./models')

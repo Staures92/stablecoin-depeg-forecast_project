@@ -1,6 +1,6 @@
-for alpha in 0.4 1.0
+for alpha in 0.4 0.8
 do
-for task in quantile expectile
+for task in point quantile expectile
 do
 
 python main_lightning.py \
@@ -8,6 +8,7 @@ python main_lightning.py \
     --forecast_task $task \
     --tau_pinball 0.025 \
     --model_name iTransformer \
+    --method forecast \
     --experiment_name stablecoin-depeg \
     --run_name "alpha_${alpha}_${task}" \
     --n_epochs 50 \
@@ -20,9 +21,10 @@ python main_lightning.py \
     --test_split 0.85 \
     --batch_size 64 \
     --test_batch_size 20 \
-    --learning_rate 1e-4 \
+    --learning_rate 0.0001 \
     --scaler revin \
     --affin 1 \
+    --remote_logging \
 
 done
 done
