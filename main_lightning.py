@@ -29,7 +29,7 @@ if __name__ == "__main__":
     temp_args = parser.parse_known_args()
     dict_args = vars(temp_args[0])
     final_dataset_path = build_dataset(**dict_args)
-    temp_args.dataset_path = final_dataset_path
+
 
 
     model_dict = {
@@ -37,13 +37,14 @@ if __name__ == "__main__":
         'NBEATS':[]
     }
 
-    model = model_dict[temp_args.model_name][0]
+    model = model_dict[temp_args[0].model_name][0]
     model.add_model_specific_args(parser)
     args = parser.parse_args()
+    args.dataset_path = final_dataset_path
     if args.method == 'forecast':
-        args.enc_in = pd.read_parquet(args.final_dataset_path).shape[1]
+        args.enc_in = pd.read_parquet(args.dataset_path).shape[1]
     elif args.method == 'earlywarning':
-        args.enc_in = pd.read_parquet(args.final_dataset_path).shape[1] - 1 
+        args.enc_in = pd.read_parquet(args.dataset_path).shape[1] - 1 
 
     dict_args = vars(args)
     LModel = model(**dict_args)

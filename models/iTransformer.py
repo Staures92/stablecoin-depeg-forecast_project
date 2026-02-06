@@ -13,18 +13,18 @@ from einops import rearrange
 from torch.distributions import Normal, StudentT
 from neuralforecast.losses.pytorch import DistributionLoss, sCRPS
 from torch.optim.lr_scheduler import CosineAnnealingLR
+from utils.losses import pinball_loss, pinball_loss_expectile
 
 
 
 class Model(nn.Module):
 
-    def __init__(self, seq_len, pred_len, d_model, d_ff, dropout, e_layers, activation, embed, freq, n_heads, factor, enc_in, exogenous,
+    def __init__(self, seq_len, pred_len, d_model, d_ff, dropout, e_layers, activation, embed, freq, n_heads, factor, enc_in,
                 method = 'forecast', forecast_task = 'quantile', dist_side = 'both',
                 affine = True, scaler= 'revin'):
         super(Model, self).__init__()
         self.seq_len = seq_len
         self.pred_len = pred_len
-        self.exogenous = exogenous
         self.method = method
         self.enc_in = enc_in
         self.revin = RevIN(self.enc_in, affine = affine, mode=scaler)
@@ -56,18 +56,8 @@ class Model(nn.Module):
     def forecast(self, x_enc):
 
         _, _, N = x_enc.shape
-        if self.exogenous > 0:
-            x_exo = x_enc[:,:,self.enc_in:]
-            x_enc = x_enc[:,:,:self.enc_in]
-            _, _, N = x_enc.shape
-            x_enc = self.revin(x_enc, 'norm')
-            self.ms = x_exo.mean(1, keepdim=True).detach()
-            x_exo = x_exo - self.ms
-            self.sv = torch.sqrt(torch.var(x_exo, dim=1, keepdim=True, unbiased=False) + 1e-5)
-            x_exo /= self.sv
-            x_enc = torch.concat((x_enc, x_exo), dim = -1)
-        else:
-            x_enc = self.revin(x_enc, 'norm')
+        
+        x_enc = self.revin(x_enc, 'norm')
 
         enc_out = self.enc_embedding(x_enc, None)
         enc_out, attns = self.encoder(enc_out, attn_mask=None)
@@ -78,18 +68,8 @@ class Model(nn.Module):
     
     def earlywarning(self, x_enc):
         _, _, N = x_enc.shape
-        if self.exogenous > 0:
-            x_exo = x_enc[:,:,self.enc_in:]
-            x_enc = x_enc[:,:,:self.enc_in]
-            _, _, N = x_enc.shape
-            x_enc = self.revin(x_enc, 'norm')
-            self.ms = x_exo.mean(1, keepdim=True).detach()
-            x_exo = x_exo - self.ms
-            self.sv = torch.sqrt(torch.var(x_exo, dim=1, keepdim=True, unbiased=False) + 1e-5)
-            x_exo /= self.sv
-            x_enc = torch.concat((x_enc, x_exo), dim = -1)
-        else:
-            x_enc = self.revin(x_enc, 'norm')
+        
+        x_enc = self.revin(x_enc, 'norm')
 
         enc_out = self.enc_embedding(x_enc, None)
         enc_out, attns = self.encoder(enc_out, attn_mask=None)
@@ -113,7 +93,7 @@ class iTransformer(L.LightningModule):
                 learning_rate, method,
                 embed, freq, dropout, e_layers,
                 d_model, factor, n_heads, d_ff, activation, enc_in,
-                exogenous, affine, scaler, forecast_task, dist_side, tau_pinball,
+                affine, scaler, forecast_task, dist_side, tau_pinball,
                 **kwargs
                 ):
         super().__init__()
@@ -121,7 +101,7 @@ class iTransformer(L.LightningModule):
         self.learning_rate = learning_rate
         self.batch_size = batch_size
         self.test_batch_size = test_batch_size
-        self.model = Model(seq_len, pred_len, d_model, d_ff, dropout, e_layers, activation, embed, freq, n_heads, factor, enc_in, exogenous, method, forecast_task, dist_side, affine, scaler)
+        self.model = Model(seq_len, pred_len, d_model, d_ff, dropout, e_layers, activation, embed, freq, n_heads, factor, enc_in, method, forecast_task, dist_side, affine, scaler)
         
         self.criterion= self.get_criterion(method, forecast_task, dist_side, tau_pinball)
         self.method = method
@@ -189,53 +169,12 @@ class iTransformer(L.LightningModule):
             if forecast_task == 'point':
                 criterion = nn.MSELoss()
             elif forecast_task == 'quantile':
-                criterion = lambda pred, target: self.pinball_loss(pred, target, tau_pinball, dist_side)
+                criterion = lambda pred, target: pinball_loss(pred, target, tau_pinball, dist_side)
             elif forecast_task == 'expectile':
-                criterion = lambda pred, target: self.pinball_loss_expectile(pred, target, tau_pinball, dist_side)
+                criterion = lambda pred, target: pinball_loss_expectile(pred, target, tau_pinball, dist_side)
         elif method == 'earlywarning':
             criterion = nn.BCELoss()
         return criterion
-    def pinball_loss_expectile(self, pred, target, tau, dist_side):
-        if dist_side == 'up':
-            r = (target - pred)
-            w = torch.where(r >= 0, torch.as_tensor(tau, device=pred.device, dtype=pred.dtype),
-                                torch.as_tensor(1.0 - tau, device=pred.device, dtype=pred.dtype))
-            loss = w * r.pow(2)
-            loss = torch.mean(loss)
-        elif dist_side == 'down':
-            r = (pred - target)
-            w = torch.where(r >= 0, torch.as_tensor(tau, device=pred.device, dtype=pred.dtype),
-                                torch.as_tensor(1.0 - tau, device=pred.device, dtype=pred.dtype))
-            loss = w * r.pow(2)
-            loss = torch.mean(loss)
-        elif dist_side == 'both':
-            pred_down = pred[:, :, 0]
-            pred_up = pred[:, :, 1]
-            r_down = (pred_down - target)
-            w_down = torch.where(r_down >= 0, torch.as_tensor(tau, device=pred.device, dtype=pred.dtype),
-                                torch.as_tensor(1.0 - tau, device=pred.device, dtype=pred.dtype))
-            loss_down = w_down * r_down.pow(2)
-            r_up = (target - pred_up)
-            w_up = torch.where(r_up >= 0, torch.as_tensor(tau, device=pred.device, dtype=pred.dtype),
-                                torch.as_tensor(1.0 - tau, device=pred.device, dtype=pred.dtype))
-            loss_up = w_up * r_up.pow(2)
-            loss = torch.mean(loss_down + loss_up)
-        return loss
-    
-    def pinball_loss(self, pred, target, tau, dist_side):
-        if dist_side == 'both':
-            pred_down = pred[:, :, 0]
-            pred_up = pred[:, :, 1]
-            loss_up = torch.max((tau * (target - pred_up)), ((tau - 1) * (target - pred_up)))
-            loss_down = torch.max((tau * (pred_down - target)), ((tau - 1) * (pred_down - target)))
-            loss = torch.mean(loss_up + loss_down)
-        elif dist_side == 'up':
-            loss = torch.max((tau * (target - pred)), ((tau - 1) * (target - pred)))
-            loss = torch.mean(loss)
-        elif dist_side == 'down':
-            loss = torch.max((tau * (pred - target)), ((tau - 1) * (pred - target)))
-            loss = torch.mean(loss)
-        return loss
 
 
 
@@ -245,7 +184,7 @@ class iTransformer(L.LightningModule):
         model_parser = parent_parser.add_argument_group('iTransformer')
         # Embedding
         model_parser.add_argument('--embed', type=str, default='fixed')
-        model_parser.add_argument('--freq', type=str, default='M')
+        model_parser.add_argument('--freq', type=str, default='h')
 
         
         # Properties of Attn layer
@@ -263,5 +202,4 @@ class iTransformer(L.LightningModule):
         model_parser.add_argument('--affine', type=int, choices = [0,1], default=1)
 
         model_parser.add_argument('--learning_rate', type=float,default=0.0001)
-        model_parser.add_argument('--quantile', type=float,default=0)
         return parent_parser

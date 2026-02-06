@@ -5,7 +5,7 @@ import pandas as pd
 from sklearn.preprocessing import RobustScaler, MinMaxScaler, StandardScaler
 
 class Dataset_forecast(Dataset) :
-    def __init__(self, path, flag, size, split, splitval, scaler, exogenous):
+    def __init__(self, path, flag, size, split, splitval, scaler):
         super().__init__()
         self.path = path
         self.flag = flag
@@ -14,7 +14,6 @@ class Dataset_forecast(Dataset) :
         self.label_len = size[2]
         self.split = split
         self.scaler = scaler
-        self.exogenous = exogenous
         self.splitval = splitval
         assert flag in ['train', 'test', 'val']
         type_map = {'train': 0, 'val': 1, 'test': 2}
@@ -63,14 +62,13 @@ class Dataset_forecast(Dataset) :
 
 
 class Dataset_earlywarning(Dataset) :
-    def __init__(self, path, flag, size, split, splitval, scaler, exogenous):
+    def __init__(self, path, flag, size, split, splitval, scaler):
         super().__init__()
         self.path = path
         self.flag = flag
         self.seq_len = size[0]
         self.split = split
         self.scaler = scaler
-        self.exogenous = exogenous
         self.splitval = splitval
         assert flag in ['train', 'test', 'val']
         type_map = {'train': 0, 'val': 1, 'test': 2}

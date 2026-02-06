@@ -4,6 +4,7 @@ def parse_arguments():
     parser = argparse.ArgumentParser(description='main file arguments')
 
     dataset_building = parser.add_argument_group('Dataset building arguments')
+    dataset_building.add_argument('--bypass', action='store_true', help='whether to bypass dataset building')
     dataset_building.add_argument('--dataset_path', type=str, default='./preprocessed_datasets', help='path to save the dataset')
     dataset_building.add_argument('--alpha', type=float, help='Gegenbauer polynomial alpha parameter', default=0.5)
     dataset_building.add_argument('--aave',action='store_false', help='remove AAVE metrics')
@@ -33,19 +34,17 @@ def parse_arguments():
 
 
     model = parser.add_argument_group('Model training arguments')
-    model.add_argument('--experiment_name', type=str, default='TSMixer_originations')
+    model.add_argument('--experiment_name', type=str, default='stablecoin-depeg')
     model.add_argument('--run_name', type=str, default=None)
     model.add_argument('--model_root_path', type=str, default='./models')
     model.add_argument('--method', type = str, default='forecast', choices=['forecast', 'earlywarning'], help='forecasting or early warning classification task')
     model.add_argument('--forecast_task', type=str, default = 'quantile', choices=['quantile', 'point', 'expectile'], help='quantile, expectile or point forecasting')
     model.add_argument('--dist_side', type=str, default='both', choices=['both', 'up', 'down'], help='side of the distribution to be predicted (for quantile/expectile forecasting)')
     model.add_argument('--tau_pinball', type=float, help='tau parameter for pinball loss (quantile/expectile regression)', default=0.05)
-    model.add_argument('--model_name', type=str, default='TSMixer')
+    model.add_argument('--model_name', type=str, default='iTransformer', help='name of the model to be trained')
     model.add_argument('--n_epochs', type=int, default=50)
     model.add_argument('--patience', type=int, default=10)
     model.add_argument('--verbose', type=int, default=1)
-    model.add_argument('--loss_func', type=str, default='smape')
-    model.add_argument('--seed', type=int, default=0)
     model.add_argument('--check_lr', type=int, default=0)
 
     return parser

@@ -8,7 +8,7 @@ from data_loader.Datasets import Dataset_forecast, Dataset_earlywarning
 
 
 class DataModule_forecast(L.LightningDataModule):
-    def __init__(self, dataset_path, batch_size, test_split, val_split, seq_len, pred_len, label_len, test_batch_size, validation, exogenous, **kwargs):
+    def __init__(self, dataset_path, batch_size, test_split, val_split, seq_len, pred_len, label_len, test_batch_size, **kwargs):
         super().__init__()
         self.dataset_path = dataset_path
         self.input_len = seq_len
@@ -20,8 +20,6 @@ class DataModule_forecast(L.LightningDataModule):
         self.splitval = val_split
         print(self.splitval)
         print(self.split)
-        self.validation = validation
-        self.exogenous = exogenous
         # self.save_hyperparameters()
     def setup(self, stage : str):
         if stage == 'fit' :
@@ -54,7 +52,7 @@ class DataModule_forecast(L.LightningDataModule):
         return DataLoader(self.dataset_test, batch_size=self.test_batch_size, shuffle=False, num_workers=2)
 
 class DataModule_earlywarning(L.LightningDataModule):
-    def __init__(self, dataset_path, batch_size, test_split, val_split, seq_len, pred_len, label_len, test_batch_size, validation, exogenous, **kwargs):
+    def __init__(self, dataset_path, batch_size, test_split, val_split, seq_len, pred_len, label_len, test_batch_size, **kwargs):
         super().__init__()
         self.dataset_path = dataset_path
         self.input_len = seq_len
@@ -66,23 +64,18 @@ class DataModule_earlywarning(L.LightningDataModule):
         self.splitval = val_split
         print(self.splitval)
         print(self.split)
-        self.validation = validation
-        self.exogenous = exogenous
         # self.save_hyperparameters()
     def setup(self, stage : str):
         if stage == 'fit' :
             self.dataset_train = Dataset_earlywarning(self.dataset_path, flag = 'train', size = [self.input_len, self.pred_len, self.label_len],
-                                                      split = self.split, splitval=self.splitval, scaler = None,
-                                                    exogenous=self.exogenous
+                                                      split = self.split, splitval=self.splitval, scaler = None
                                                       )
             self.dataset_val = Dataset_earlywarning(self.dataset_path, flag = 'val', size = [self.input_len, self.pred_len, self.label_len], 
-                                                   split = self.split,  splitval=self.splitval, scaler = None, 
-                                                   exogenous=self.exogenous
+                                                   split = self.split,  splitval=self.splitval, scaler = None
                                                    )
         if stage == 'test' :
             self.dataset_test = Dataset_earlywarning(self.dataset_path, flag = 'test', size = [self.input_len, self.pred_len, self.label_len],
-                                                     split = self.split,  splitval=self.splitval, scaler = None,
-                                                    exogenous=self.exogenous
+                                                     split = self.split,  splitval=self.splitval, scaler = None
                                                      )
         
     def train_dataloader(self):

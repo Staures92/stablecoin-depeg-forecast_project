@@ -256,7 +256,7 @@ def build_dataset(
             dataset_path,
             alpha, aave, aave_liq, crv, eth_price, 
             eth_indicators, fear_greed, gegen, target, 
-            target_window, target_threshold, depeg_side,
+            target_window, target_threshold, depeg_side, bypass = False,
             **kwargs):
         dataset = load_uniswap_metrics()
         if aave:
@@ -335,18 +335,21 @@ def build_dataset(
 
         if target:
             if not (aave and aave_liq and crv and eth_price and eth_indicators and fear_greed and gegen): 
-                
-                dataset.to_parquet(f'{dataset_path}/dataset_alpha_{alpha}_aave-{aave}_ethprice-{eth_price}_ethind-{eth_indicators}_fear-{fear_greed}_gegen-{gegen}_binarytarget_win-{target_window}_thresh-{target_threshold}_{depeg_side}.parquet')
+                if not bypass:
+                    dataset.to_parquet(f'{dataset_path}/dataset_alpha_{alpha}_aave-{aave}_ethprice-{eth_price}_ethind-{eth_indicators}_fear-{fear_greed}_gegen-{gegen}_binarytarget_win-{target_window}_thresh-{target_threshold}_{depeg_side}.parquet')
                 return f'{dataset_path}/dataset_alpha_{alpha}_aave-{aave}_ethprice-{eth_price}_ethind-{eth_indicators}_fear-{fear_greed}_gegen-{gegen}_binarytarget_win-{target_window}_thresh-{target_threshold}_{depeg_side}.parquet' 
             else:
-                dataset.to_parquet(f'{dataset_path}/dataset_alpha_{alpha}_full_binarytarget_win-{target_window}_thresh-{target_threshold}_{depeg_side}.parquet')
+                if not bypass:
+                    dataset.to_parquet(f'{dataset_path}/dataset_alpha_{alpha}_full_binarytarget_win-{target_window}_thresh-{target_threshold}_{depeg_side}.parquet')
                 return f'{dataset_path}/dataset_alpha_{alpha}_full_binarytarget_win-{target_window}_thresh-{target_threshold}_{depeg_side}.parquet'
         else:
             if not (aave and aave_liq and crv and eth_price and eth_indicators and fear_greed and gegen):   
-                dataset.to_parquet(f'{dataset_path}/dataset_alpha_{alpha}_aave-{aave}_ethprice-{eth_price}_ethind-{eth_indicators}_fear-{fear_greed}_gegen-{gegen}.parquet')
+                if not bypass:
+                    dataset.to_parquet(f'{dataset_path}/dataset_alpha_{alpha}_aave-{aave}_ethprice-{eth_price}_ethind-{eth_indicators}_fear-{fear_greed}_gegen-{gegen}.parquet')
                 return f'{dataset_path}/dataset_alpha_{alpha}_aave-{aave}_ethprice-{eth_price}_ethind-{eth_indicators}_fear-{fear_greed}_gegen-{gegen}.parquet'
             else:
-                dataset.to_parquet(f'{dataset_path}/dataset_alpha_{alpha}_full.parquet')
+                if not bypass:
+                    dataset.to_parquet(f'{dataset_path}/dataset_alpha_{alpha}_full.parquet')
                 return f'{dataset_path}/dataset_alpha_{alpha}_full.parquet'
          
 
