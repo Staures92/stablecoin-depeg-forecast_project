@@ -55,3 +55,9 @@ Build a dataset for binary classification (depeg early warning), with early warn
 ```
 python -m utils.build_dataset --alpha 0.5 -t -w 24 -th 20 -ds 'both'
 ```
+
+## Run model training 
+
+The scripts folder contains example scripts to run the model in both early-warning and forecasting mode. 
+
+Remove **--remote_logging** option if you dont have mlflow remote tracking URI, otherwise use .env. 
