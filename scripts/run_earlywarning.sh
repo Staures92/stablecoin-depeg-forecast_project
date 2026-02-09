@@ -23,6 +23,9 @@ python main_lightning.py \
     --batch_size 100 \
     --test_batch_size 20 \
     --learning_rate 0.0001 \
+    --compute_shap 1 \
+    --shap_background_size 64 \
+    --shap_test_samples 256 \
     --scaler revin \
     --affine 1 \
     --remote_logging \

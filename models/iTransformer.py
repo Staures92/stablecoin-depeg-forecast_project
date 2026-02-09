@@ -8,6 +8,7 @@ import numpy as np
 import lightning as L
 import pickle as pkl
 import os
+import shap
 import argparse
 from models.common import RevIN
 from einops import rearrange
@@ -213,6 +214,7 @@ class iTransformer_classifier(L.LightningModule):
                 embed, freq, dropout, e_layers,
                 d_model, factor, n_heads, d_ff, activation, enc_in,
                 affine, scaler, class_loss,
+                compute_shap, shap_background_size, shap_test_samples,
                 **kwargs
                 ):
         super().__init__()
@@ -228,6 +230,9 @@ class iTransformer_classifier(L.LightningModule):
         self.val_probs, self.val_true = [], []
         self.test_probs, self.test_true, self.test_seq = [], [], []
         self.criterion= self.get_criterion(class_loss)
+        self.compute_shap = compute_shap
+        self.shap_background_size = shap_background_size
+        self.shap_test_samples = shap_test_samples
         self.save_hyperparameters()
 
     def training_step(self, batch, batch_idx):
@@ -282,8 +287,72 @@ class iTransformer_classifier(L.LightningModule):
             )
             self._mlflow_log_artifact(cm_path, artifact_path="validation")
 
+    def _shap_forward(self, x: torch.Tensor) -> torch.Tensor:
+        out = self.model(x.float())  # already probabilities
+        if out.ndim == 1:
+            out = out.unsqueeze(1)
+        elif out.ndim == 2 and out.shape[1] != 1:
+            # if ever multi-class, you'd handle differently
+            out = out[:, :1]
+        return out
+    
+    def _log_shap_on_test(self):
+        if not self.trainer.is_global_zero:
+            return
+        if not getattr(self, "test_seq", None):
+            return
 
-    # ==================== TEST ====================
+        X_test = torch.cat(self.test_seq, dim=0)
+        n_test = X_test.shape[0]
+
+        n_eval = min(self.shap_test_samples, n_test)
+        idx = torch.randperm(n_test)[:n_eval]
+        X_eval = X_test[idx]
+
+        n_bg = min(self.shap_background_size, n_test)
+        bg_idx = torch.randperm(n_test)[:n_bg]
+        X_bg = X_test[bg_idx]
+
+        self.model.eval()
+        device = next(self.model.parameters()).device
+        X_bg = X_bg.to(device)
+        X_eval = X_eval.to(device)
+
+        explainer = shap.GradientExplainer(self._shap_forward, X_bg)
+
+        shap_values = explainer.shap_values(X_eval)
+
+        if isinstance(shap_values, list):
+            shap_arr = shap_values[0]
+        else:
+            shap_arr = shap_values
+
+        # Move eval inputs to CPU for saving
+        X_eval_cpu = X_eval.detach().cpu().numpy()
+
+        with tempfile.TemporaryDirectory() as td:
+            td = Path(td)
+
+            # Save raw SHAP values + corresponding inputs
+            npz_path = td / "shap_test_subset.npz"
+            np.savez_compressed(
+                npz_path,
+                shap_values=shap_arr,
+                x_eval=X_eval_cpu,
+                test_indices=idx.detach().cpu().numpy(),
+            )
+            self._mlflow_log_artifact(str(npz_path), artifact_path="test/shap")
+            shap_agg = np.abs(shap_arr).mean(axis=1)   # (B, n_features) aggregate over time
+            x_agg = X_eval_cpu.mean(axis=1)            # (B, n_features) average input over time
+
+            plt.figure(figsize=(8, 4), dpi=150)
+            shap.summary_plot(shap_agg, features=x_agg, show=False)
+            fig_path = td / "shap_summary_agg_over_time.png"
+            plt.tight_layout()
+            plt.savefig(fig_path)
+            plt.close()
+
+            self._mlflow_log_artifact(str(fig_path), artifact_path="test/shap")
 
     def on_test_epoch_start(self):
         self.test_probs, self.test_true, self.test_seq = [], [], []
@@ -344,6 +413,9 @@ class iTransformer_classifier(L.LightningModule):
 
             self._mlflow_log_artifact(str(pkl_path), artifact_path="test")
             self._mlflow_log_artifact(str(cm_path), artifact_path="test")
+        if self.compute_shap:
+            self._log_shap_on_test()
+    
     def predict_step(self, batch, batch_idx):
         return self.model(batch)
     
@@ -440,7 +512,11 @@ class iTransformer_classifier(L.LightningModule):
 
         model_parser.add_argument('--scaler', type=str,default='revin')
         model_parser.add_argument('--affine', type=int, choices = [0,1], default=1)
-
         model_parser.add_argument('--learning_rate', type=float,default=0.0001)
+
+        model_parser.add_argument('--compute_shap', type=int, choices=[0,1], default=0, help='whether to compute SHAP values at test time')
+        model_parser.add_argument('--shap_background_size', type=int, default=64, help='number of background samples for SHAP')
+        model_parser.add_argument('--shap_test_samples', type=int, default=256, help='number of test samples to compute SHAP values for (keep small; SHAP can be expensive)')
+
         return parent_parser
 
