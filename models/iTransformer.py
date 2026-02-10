@@ -10,7 +10,7 @@ import pickle as pkl
 import os
 import shap
 import argparse
-from models.common import RevIN
+from models.common import RevIN, ShapProbWrapper
 from einops import rearrange
 from torch.distributions import Normal, StudentT
 from neuralforecast.losses.pytorch import DistributionLoss, sCRPS
@@ -299,55 +299,61 @@ class iTransformer_classifier(L.LightningModule):
     def _log_shap_on_test(self):
         if not self.trainer.is_global_zero:
             return
-        if not getattr(self, "test_seq", None):
+        if len(getattr(self, "test_seq", [])) == 0:
             return
 
-        X_test = torch.cat(self.test_seq, dim=0)
+        X_test = torch.cat(self.test_seq, dim=0)  # (N, seq_len, n_features)
         n_test = X_test.shape[0]
 
         n_eval = min(self.shap_test_samples, n_test)
+        n_bg   = min(self.shap_background_size, n_test)
+
         idx = torch.randperm(n_test)[:n_eval]
-        X_eval = X_test[idx]
-
-        n_bg = min(self.shap_background_size, n_test)
         bg_idx = torch.randperm(n_test)[:n_bg]
-        X_bg = X_test[bg_idx]
 
-        self.model.eval()
+        X_eval = X_test[idx]
+        X_bg   = X_test[bg_idx]
+
         device = next(self.model.parameters()).device
-        X_bg = X_bg.to(device)
         X_eval = X_eval.to(device)
+        X_bg   = X_bg.to(device)
 
-        explainer = shap.GradientExplainer(self._shap_forward, X_bg)
+        shap_model = ShapProbWrapper(self.model).to(device)
+        shap_model.eval()
 
-        shap_values = explainer.shap_values(X_eval)
+        # IMPORTANT: ensure autograd works even if Lightning uses inference_mode=True
+        with torch.inference_mode(False), torch.enable_grad():
+            explainer = shap.GradientExplainer(shap_model, X_bg)
+            shap_values = explainer.shap_values(X_eval)
 
+        # shap_values can be either an array or a list of arrays (one per output)
         if isinstance(shap_values, list):
             shap_arr = shap_values[0]
         else:
             shap_arr = shap_values
 
-        # Move eval inputs to CPU for saving
         X_eval_cpu = X_eval.detach().cpu().numpy()
+        idx_cpu = idx.detach().cpu().numpy()
 
         with tempfile.TemporaryDirectory() as td:
             td = Path(td)
 
-            # Save raw SHAP values + corresponding inputs
             npz_path = td / "shap_test_subset.npz"
             np.savez_compressed(
                 npz_path,
-                shap_values=shap_arr,
+                shap_values=shap_arr,   # typically (B, seq_len, n_features)
                 x_eval=X_eval_cpu,
-                test_indices=idx.detach().cpu().numpy(),
+                test_indices=idx_cpu
             )
             self._mlflow_log_artifact(str(npz_path), artifact_path="test/shap")
-            shap_agg = np.abs(shap_arr).mean(axis=1)   # (B, n_features) aggregate over time
-            x_agg = X_eval_cpu.mean(axis=1)            # (B, n_features) average input over time
+
+            # Optional: summary plot (aggregate over time -> (B, n_features))
+            shap_agg = np.abs(shap_arr).mean(axis=1)  # mean over seq_len
+            x_agg = X_eval_cpu.mean(axis=1)
 
             plt.figure(figsize=(8, 4), dpi=150)
             shap.summary_plot(shap_agg, features=x_agg, show=False)
-            fig_path = td / "shap_summary_agg_over_time.png"
+            fig_path = td / "shap_summary_mean_over_time.png"
             plt.tight_layout()
             plt.savefig(fig_path)
             plt.close()
@@ -414,7 +420,10 @@ class iTransformer_classifier(L.LightningModule):
             self._mlflow_log_artifact(str(pkl_path), artifact_path="test")
             self._mlflow_log_artifact(str(cm_path), artifact_path="test")
         if self.compute_shap:
-            self._log_shap_on_test()
+            try:
+                self._log_shap_on_test()
+            except Exception as e:
+                print(f"----- Error computing SHAP values on test set: {e} -----")
     
     def predict_step(self, batch, batch_idx):
         return self.model(batch)

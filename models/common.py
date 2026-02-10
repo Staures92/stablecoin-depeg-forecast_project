@@ -68,3 +68,17 @@ class RevIN(nn.Module):
         return x
     def robust_statistics(self, x, dim=-1, eps=1e-6):
         return None
+
+class ShapProbWrapper(nn.Module):
+    """Wraps a model that outputs probabilities so SHAP sees an nn.Module."""
+    def __init__(self, base_model: nn.Module):
+        super().__init__()
+        self.base_model = base_model
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        out = self.base_model(x.float())  # already probabilities
+        if out.ndim == 1:
+            out = out.unsqueeze(1)        # (B, 1)
+        elif out.ndim == 2 and out.shape[1] != 1:
+            out = out[:, :1]
+        return out

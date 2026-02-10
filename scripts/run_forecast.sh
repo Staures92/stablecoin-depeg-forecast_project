@@ -1,4 +1,4 @@
-for alpha in 0.4 0.8
+for alpha in 0.4 1.0
 do
 for task in point quantile expectile
 do
@@ -19,9 +19,9 @@ python main_lightning.py \
     --pred_len 24 \
     --val_split 0.7 \
     --test_split 0.85 \
-    --batch_size 64 \
+    --batch_size 256 \
     --test_batch_size 20 \
-    --learning_rate 0.0001 \
+    --check_lr \
     --scaler revin \
     --affine 1 \
     --remote_logging \
