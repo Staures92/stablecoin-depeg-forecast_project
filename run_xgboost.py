@@ -171,6 +171,7 @@ if __name__ == "__main__":
 
         # Log params (a lot of them)
         mlflow.log_params({
+            "alpha": args.alpha,
             "dataset_path": dataset_path,
             "test_size": args.test_size,
             "val_size": args.val_size,
