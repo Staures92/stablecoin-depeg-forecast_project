@@ -174,14 +174,14 @@ class TSMixer_forecast(Baseclass_forecast):
                            )
         self.save_hyperparameters()
 
-        @staticmethod
-        def add_model_specific_args(parent_parser):
-            model_parser = parent_parser.add_argument_group('Model-specific arguments')
-            model_parser.add_argument('--d_model', type=int, default=2048)
-            model_parser.add_argument('--dropout', type=float,default=0.1)
-            model_parser.add_argument('--n_layers', type=int, default=3)
-            model_parser.add_argument('--scaler', type=str,default='revin')
-            model_parser.add_argument('--affine', type=int, choices = [0,1], default=1)
-            Baseclass_forecast.add_task_specific_args(parent_parser)
-            return parent_parser
+    @staticmethod
+    def add_model_specific_args(parent_parser):
+        model_parser = parent_parser.add_argument_group('Model-specific arguments')
+        model_parser.add_argument('--d_model', type=int, default=2048)
+        model_parser.add_argument('--dropout', type=float,default=0.1)
+        model_parser.add_argument('--n_layers', type=int, default=3)
+        model_parser.add_argument('--scaler', type=str,default='revin')
+        model_parser.add_argument('--affine', type=int, choices = [0,1], default=1)
+        Baseclass_forecast.add_task_specific_args(parent_parser)
+        return parent_parser
         
