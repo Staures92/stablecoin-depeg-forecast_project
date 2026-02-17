@@ -13,7 +13,7 @@ import matplotlib.pyplot as plt
 import shap
 from xgboost import plot_importance
 from sklearn.preprocessing import StandardScaler, RobustScaler
-from utils.build_dataset import build_dataset
+from utils.build_dataset import build_dataset, add_dataset_args
 import argparse
 
 import os
@@ -48,25 +48,7 @@ artifact_uri = os.getenv('ARTIFACT_URI')
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    dataset_building = parser.add_argument_group('Dataset building arguments')
-    dataset_building.add_argument('--bypass', action='store_true', help='whether to bypass dataset building')
-    dataset_building.add_argument('--dataset_path', type=str, default='./preprocessed_datasets', help='path to save the dataset')
-    dataset_building.add_argument('--alpha', type=float, help='Gegenbauer polynomial alpha parameter', default=0.5)
-    dataset_building.add_argument('--aave',action='store_false', help='remove AAVE metrics')
-    dataset_building.add_argument('--aave_liq',action='store_false', help='remove AAVE liquidations')
-    dataset_building.add_argument('--crv',action='store_false', help='remove Curve 3pool metrics')
-    dataset_building.add_argument('--eth_price',action='store_false', help='remove ETH price oracle')
-    dataset_building.add_argument('--eth_indicators',action='store_false', help='remove ETH price technical indicators')
-    dataset_building.add_argument('--btc_price',action='store_false', help='remove BTC price oracle')
-    dataset_building.add_argument('--btc_indicators',action='store_false', help='remove BTC price technical indicators')
-    dataset_building.add_argument('--fear_greed',action='store_false', help='remove Fear and Greed index')
-    dataset_building.add_argument('--gegen',action='store_false', help='remove Gegenbauer liquidity curve scores')
-    
-    class_target = parser.add_argument_group('Classification target arguments')
-    class_target.add_argument('-w','--target_window', type=int, default=24, help='time window (in hours) for classification target')
-    class_target.add_argument('-th','--target_threshold', type=int, default=25, help='threshold (in bps) for classification target')
-    class_target.add_argument('-ds','--depeg_side', type=str, default='both', choices=['both', 'up', 'down'], help='depeg side for classification target')
-    class_target.add_argument('-dt','--dynamic_threshold', action='store_true', help='use dynamic threshold for classification target')
+    parser = add_dataset_args(parser)
 
     training_args = parser.add_argument_group('Training arguments')
     training_args.add_argument('--remote_logging', action='store_true', help='whether to log training metrics to remote MLFlow server')
@@ -86,6 +68,7 @@ if __name__ == "__main__":
     dict_args = vars(args)
     dict_args['target'] = True
     dataset_path = build_dataset(**dict_args)
+
         # ---- MLflow setup ----
     if args.remote_logging:
         mlflow.set_tracking_uri(uri)
@@ -240,13 +223,28 @@ if __name__ == "__main__":
         cm = confusion_matrix(y_test, yhat)
 
         fig, ax = plt.subplots(figsize=(4, 4))
-        im = ax.imshow(cm, cmap="Blues")
+        im = ax.imshow(cm, cmap="Blues", interpolation="nearest")
+
         ax.set_title("Confusion Matrix")
         ax.set_xlabel("Predicted")
         ax.set_ylabel("True")
-        for (i, j_), v in np.ndenumerate(cm):
-            ax.text(j_, i, str(v), ha="center", va="center")
+
+        # ticks/labels (0,1) on both axes
+        ax.set_xticks([0, 1])
+        ax.set_yticks([0, 1])
+        ax.set_xticklabels(["0", "1"])
+        ax.set_yticklabels(["0", "1"])
+
+        # keep full matrix visible and aligned
+        ax.set_xlim(-0.5, cm.shape[1] - 0.5)
+        ax.set_ylim(cm.shape[0] - 0.5, -0.5)
+
+        for (i, j), v in np.ndenumerate(cm):
+            ax.text(j, i, str(v), ha="center", va="center")
+
         fig.colorbar(im, ax=ax)
+        fig.tight_layout()
+
         log_fig(fig, "plots/confusion_matrix.png")
         plt.close(fig)
 
@@ -255,6 +253,8 @@ if __name__ == "__main__":
 
         # If you used StandardScaler, also log it so you can reproduce inference
         if args.scaler == "standard":
+            mlflow.sklearn.log_model(scaler, artifact_path="preprocess/scaler")
+        if args.scaler == "robust":
             mlflow.sklearn.log_model(scaler, artifact_path="preprocess/scaler")
 
         mlflow.xgboost.log_model(
@@ -281,20 +281,28 @@ if __name__ == "__main__":
         order = np.argsort(std_per_feature)[::-1]
         shap.plots.beeswarm(shap_values, order=order, max_display=25, show=False)
         _mlflow_log_current_fig("shap_beeswarm_global.png", artifact_subdir="plots/shap")
+        
+        
+        
+        shap_values_train = explainer(X_train)
+        std_per_feature_train = shap_values_train.values.std(axis=0)
+        order = np.argsort(std_per_feature_train)[::-1]
+        shap.plots.beeswarm(shap_values_train, order=order, max_display=25, show=False)
+        _mlflow_log_current_fig("shap_beeswarm_global_insample.png", artifact_subdir="plots/shap")
 
         # ---------- 2) SHAP beeswarm for "warnings" subset ----------
-        warn_mask = proba_test >= 0.2
+        warn_mask = proba_test >= thresh
         sv_warn = shap_values[warn_mask]
         if sv_warn.values.shape[0] > 0:
             shap.plots.beeswarm(sv_warn, max_display=25, show=False)
-            _mlflow_log_current_fig("shap_beeswarm_warn_subset.png", artifact_subdir="plots/shap")
+            _mlflow_log_current_fig("shap_beeswarm_above_threshold.png", artifact_subdir="plots/shap")
 
             # ---------- 3) SHAP beeswarm ordered by mean positive contribution in warning regime ----------
             # (Your snippet referenced sv_warn_pos but didn't define it; use sv_warn here.)
             pos_mean = np.clip(sv_warn.values, 0, None).mean(axis=0)
             order_pos = np.argsort(pos_mean)[::-1]
             shap.plots.beeswarm(sv_warn, order=order_pos, max_display=25, show=False)
-            _mlflow_log_current_fig("shap_beeswarm_warn_ordered_by_pos_mean.png", artifact_subdir="plots/shap")
+            _mlflow_log_current_fig("shap_beeswarm_above_threshold_ordered_by_pos_mean.png", artifact_subdir="plots/shap")
 
         # ---------- 4) XGBoost feature importance (gain/weight/cover) ----------
         for importance_type in ["gain", "weight", "cover"]:

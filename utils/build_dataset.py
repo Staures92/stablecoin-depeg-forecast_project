@@ -6,6 +6,11 @@ from scipy.special import eval_gegenbauer
 import datetime
 import argparse
 
+def add_swap_size_metrics():
+    df_integral = pd.read_parquet('./data/Uniswap/swap_size_metrics.parquet')
+    return df_integral
+
+
 def add_forecasting_target():
     state = pd.read_parquet('./data/Uniswap/hourly_pool_state_full.parquet')
     state.index = state.hour
@@ -155,9 +160,12 @@ def add_technical_indicators(
     log_ret = np.log(close).diff()
     out[f"{prefix}vol_{vol_window}"] = log_ret.rolling(window=vol_window, min_periods=vol_window).std()
     out[f"{prefix}vol_{vol_window}_ann"] = out[f"{prefix}vol_{vol_window}"] * np.sqrt(periods_per_year)
-    out[f'{prefix}price_raw'] = out['price_raw']
-    out[f'{prefix}price_usd'] = out['price_usd']
-    out.drop(columns=['price_raw', 'price_usd'], inplace=True)
+    # out[f'{prefix}price_raw'] = out['price_raw']
+    out[f'{prefix}{price_col}'] = out[price_col]
+    try:
+        out.drop(columns=['price_raw', price_col], inplace=True)
+    except:
+        out.drop(columns=[price_col], inplace=True)
     return out
 
 def eth_price_oracle():
@@ -165,15 +173,25 @@ def eth_price_oracle():
     ts = datetime.datetime(2022,1,1, tzinfo=datetime.timezone.utc)
     df = add_technical_indicators(ETH_price, price_col='price_usd', prefix = 'eth_')
     df= df[df.index >= ts]
-    df = df.drop(columns = ['eth_price_raw', 'eth_vol_168_ann'])
+    df = df.drop(columns = ['eth_vol_168_ann'])
     return df
+
+def usd_index_oracle():
+    USD_index = pd.read_parquet('./data/ETH_blocks/Chainlink/usd_index_hourly.parquet')
+    ts = datetime.datetime(2022,1,1, tzinfo=datetime.timezone.utc)
+    df = add_technical_indicators(USD_index, price_col='usd_index', prefix = 'fx_')
+    df= df[df.index >= ts]
+    df = df.drop(columns = ['EUR/USD_fx_foreign_per_usd', 'GBP/USD_fx_foreign_per_usd', 'JPY/USD_fx_foreign_per_usd'])
+    return df
+
+
 
 def btc_price_oracle():
     BTC_price = pd.read_parquet('./data/ETH_blocks/Chainlink/btcusd_oracle_hourly.parquet')
     ts = datetime.datetime(2022,1,1, tzinfo=datetime.timezone.utc)
     df = add_technical_indicators(BTC_price, price_col='price_usd', prefix = 'btc_')
     df= df[df.index >= ts]
-    df = df.drop(columns = ['btc_price_raw', 'btc_vol_168_ann'])
+    df = df.drop(columns = ['btc_vol_168_ann'])
     return df
 
 def fear_greed_index():
@@ -326,9 +344,9 @@ def gegenbauer_energy_features(df, alpha=0.4):
 def build_dataset(
             dataset_path,
             alpha, aave, aave_liq, crv, eth_price, 
-            eth_indicators, btc_price, btc_indicators, fear_greed, gegen, target, 
+            eth_indicators, btc_price, btc_indicators, usd_index, usd_indicators, fear_greed, gegen, target, 
             target_window, target_threshold, depeg_side, dynamic_threshold,
-            gegen_indicators,
+            gegen_indicators, swap_size, 
             bypass = False,
             **kwargs):
         dataset = load_uniswap_metrics()
@@ -383,6 +401,20 @@ def build_dataset(
                 print(e)
                 print('--- could not join btc price oracle ---')    
                 print('btc price oracle last date :', btc_price_oracle().index[-1])
+        if usd_index:
+            try:
+                dataset = dataset.join(usd_index_oracle()['fx_usd_index'])
+            except Exception as e:      
+                print(e)
+                print('--- could not join usd index oracle ---')    
+                print('usd index oracle last date :', usd_index_oracle().index[-1])
+        if usd_indicators:
+            try:
+                dataset = dataset.join(usd_index_oracle().drop(columns=['fx_usd_index']))
+            except Exception as e:      
+                print(e)
+                print('--- could not join usd index oracle ---')    
+                print('usd index oracle last date :', usd_index_oracle().index[-1])
         if fear_greed: 
             try:
                 dfG = fear_greed_index()
@@ -405,6 +437,14 @@ def build_dataset(
             except Exception as e:      
                 print(e)
                 print('--- could not join gegenbauer liquidity curve scores ---')   
+        if swap_size:
+            try:
+                swap_size_metrics = add_swap_size_metrics()
+                dataset = dataset.join(swap_size_metrics)
+            except Exception as e:      
+                print(e)
+                print('--- could not join uniswap swap size curve metrics ---')
+        
         try:
             dataset = dataset.join(add_forecasting_target())
         except Exception as e:
@@ -457,27 +497,25 @@ def build_dataset(
 
         dataset = dataset.astype('float32').ffill()
         if target:
-            if not (aave and aave_liq and crv and eth_price and eth_indicators and btc_price and btc_indicators and fear_greed and gegen and gegen_indicators): 
+            if not (aave and aave_liq and crv and eth_price and eth_indicators and btc_price and btc_indicators and fear_greed and gegen and gegen_indicators and swap_size and usd_index): 
                 if not bypass:
-                    dataset.to_parquet(f'{dataset_path}/dataset_alpha_{alpha}_aave-{aave}_ethprice-{eth_price}_ethind-{eth_indicators}_btcprice-{btc_price}_btcind-{btc_indicators}_fear-{fear_greed}_gegen-{gegen}_gegenind-{gegen_indicators}_binarytarget_win-{target_window}_thresh-{target_threshold}_{depeg_side}_dynamic-{dynamic_threshold}.parquet')
-                return f'{dataset_path}/dataset_alpha_{alpha}_aave-{aave}_ethprice-{eth_price}_ethind-{eth_indicators}_btcprice-{btc_price}_btcind-{btc_indicators}_fear-{fear_greed}_gegen-{gegen}_gegenind-{gegen_indicators}_binarytarget_win-{target_window}_thresh-{target_threshold}_{depeg_side}_dynamic-{dynamic_threshold}.parquet' 
+                    dataset.to_parquet(f'{dataset_path}/dataset_alpha_{alpha}_aave-{aave}_ethprice-{eth_price}_ethind-{eth_indicators}_btcprice-{btc_price}_btcind-{btc_indicators}_fear-{fear_greed}_gegen-{gegen}_gegenind-{gegen_indicators}_swap-{swap_size}_usdi-{usd_index}_binarytarget_win-{target_window}_thresh-{target_threshold}_{depeg_side}_dynamic-{dynamic_threshold}.parquet')
+                return f'{dataset_path}/dataset_alpha_{alpha}_aave-{aave}_ethprice-{eth_price}_ethind-{eth_indicators}_btcprice-{btc_price}_btcind-{btc_indicators}_fear-{fear_greed}_gegen-{gegen}_gegenind-{gegen_indicators}_swap-{swap_size}_usdi-{usd_index}_binarytarget_win-{target_window}_thresh-{target_threshold}_{depeg_side}_dynamic-{dynamic_threshold}.parquet' 
             else:
                 if not bypass:
                     dataset.to_parquet(f'{dataset_path}/dataset_alpha_{alpha}_full_binarytarget_win-{target_window}_thresh-{target_threshold}_{depeg_side}_dynamic-{dynamic_threshold}.parquet')
                 return f'{dataset_path}/dataset_alpha_{alpha}_full_binarytarget_win-{target_window}_thresh-{target_threshold}_{depeg_side}_dynamic-{dynamic_threshold}.parquet'
         else:
-            if not (aave and aave_liq and crv and eth_price and eth_indicators and btc_price and btc_indicators and fear_greed and gegen and gegen_indicators):   
+            if not (aave and aave_liq and crv and eth_price and eth_indicators and btc_price and btc_indicators and fear_greed and gegen and gegen_indicators and swap_size and usd_index):   
                 if not bypass:
-                    dataset.to_parquet(f'{dataset_path}/dataset_alpha_{alpha}_aave-{aave}_ethprice-{eth_price}_ethind-{eth_indicators}_btcprice-{btc_price}_btcind-{btc_indicators}_fear-{fear_greed}_gegen-{gegen}_gegenind-{gegen_indicators}.parquet')
-                return f'{dataset_path}/dataset_alpha_{alpha}_aave-{aave}_ethprice-{eth_price}_ethind-{eth_indicators}_btcprice-{btc_price}_btcind-{btc_indicators}_fear-{fear_greed}_gegen-{gegen}_gegenind-{gegen_indicators}.parquet'
+                    dataset.to_parquet(f'{dataset_path}/dataset_alpha_{alpha}_aave-{aave}_ethprice-{eth_price}_ethind-{eth_indicators}_btcprice-{btc_price}_btcind-{btc_indicators}_fear-{fear_greed}_gegen-{gegen}_gegenind-{gegen_indicators}_swap-{swap_size}_usdi-{usd_index}.parquet')
+                return f'{dataset_path}/dataset_alpha_{alpha}_aave-{aave}_ethprice-{eth_price}_ethind-{eth_indicators}_btcprice-{btc_price}_btcind-{btc_indicators}_fear-{fear_greed}_gegen-{gegen}_gegenind-{gegen_indicators}_swap-{swap_size}_usdi-{usd_index}.parquet'
             else:
                 if not bypass:
                     dataset.to_parquet(f'{dataset_path}/dataset_alpha_{alpha}_full.parquet')
                 return f'{dataset_path}/dataset_alpha_{alpha}_full.parquet'
          
-
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description='main file arguments')
+def add_dataset_args(parser):
     dataset_building = parser.add_argument_group('dataset building arguments')
     dataset_building.add_argument('--dataset_path', type=str, default='./preprocessed_datasets', help='path to save the dataset')
     dataset_building.add_argument('--alpha', type=float, help='Gegenbauer polynomial alpha parameter', required=True)
@@ -488,6 +526,9 @@ if __name__ == "__main__":
     dataset_building.add_argument('--eth_indicators',action='store_false', help='remove ETH price technical indicators')
     dataset_building.add_argument('--btc_price',action='store_false', help='remove BTC price oracle')
     dataset_building.add_argument('--btc_indicators',action='store_false', help='remove BTC price technical indicators')
+    dataset_building.add_argument('--usd_index',action='store_false', help='remove USD index oracle')
+    dataset_building.add_argument('--usd_indicators',action='store_false', help='remove USD index technical indicators')
+    dataset_building.add_argument('--swap_size',action='store_false', help='remove Uniswap swap size metrics')
     dataset_building.add_argument('--fear_greed',action='store_false', help='remove Fear and Greed index')
     dataset_building.add_argument('--gegen',action='store_false', help='remove Gegenbauer liquidity curve scores')
     dataset_building.add_argument('--gegen_indicators',action='store_false', help='remove Gegenbauer liquidity curve time series features')
@@ -498,7 +539,12 @@ if __name__ == "__main__":
     class_target.add_argument('-th','--target_threshold', type=int, default=25, help='threshold (in bps) for classification target')
     class_target.add_argument('-ds','--depeg_side', type=str, default='both', choices=['both', 'up', 'down'], help='depeg side for classification target')
     class_target.add_argument('-dt','--dynamic_threshold', action='store_true', help='use dynamic threshold for classification target')
+    
+    return parser
 
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description='main file arguments')
+    parser = add_dataset_args(parser)
     args = parser.parse_args()
     dict_args = vars(args)
     dataset_path = build_dataset(**dict_args)

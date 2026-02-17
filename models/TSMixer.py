@@ -87,7 +87,7 @@ class MixingLayer(nn.Module):
 class Model(nn.Module):
     def __init__(self, seq_len, pred_len, d_model, dropout, n_layers,
                 method, forecast_task, dist_side,
-                enc_in, batch_size,
+                enc_in,
                 affine = True, scaler = 'revin', n_cheb =2):
         super(Model, self).__init__()
         self.n_layers = n_layers
@@ -96,19 +96,19 @@ class Model(nn.Module):
         self.seq_len = seq_len
         self.method = method
         self.revin = RevIN(self.enc_in, affine = affine, mode=scaler)
-        self.mixing_layers = [
+        mixing_layers = [
             MixingLayer(
                 n_series=self.enc_in, input_size=self.seq_len, dropout=dropout, ff_dim=d_model
             )
             for _ in range(self.n_layers)
         ]
+        self.mixing_layers = nn.Sequential(*mixing_layers)
         if dist_side == 'both' and forecast_task in ['quantile', 'expectile']:
             self.projection = nn.Linear(self.seq_len, self.pred_len * 2)
         elif (dist_side in ['up', 'down'] and forecast_task in ['quantile', 'expectile']) or forecast_task == 'point':
             self.projection = nn.Linear(self.seq_len, self.pred_len)
         elif forecast_task == 'distribution':
             self.projection = nn.Linear(self.seq_len, self.pred_len * (2+n_cheb))
-        self.batch_size = batch_size
         self.classify_time = nn.Linear(seq_len, 1)
         self.classify_features = nn.Linear(enc_in, 1)
 
@@ -136,7 +136,7 @@ class Model(nn.Module):
     def forward(self, x_enc):
         if self.method == 'forecast':
             dec_out = self.forecast(x_enc)
-            dec_out = torch.squeeze(dec_out = dec_out.view(self.batch_size, self.pred_len, -1), dim = -1)
+            dec_out = torch.squeeze(dec_out.view(dec_out.shape[0], self.pred_len, -1), dim = -1)
             return dec_out
         elif self.method == 'earlywarning':
             classify_out = self.earlywarning(x_enc).squeeze(dim = -1)
@@ -147,7 +147,7 @@ class TSMixer_forecast(Baseclass_forecast):
     def __init__(self, 
                 seq_len, pred_len, d_model, dropout,
                 n_layers,
-                enc_in, method, batch_size, affine, scaler,
+                enc_in, method, batch_size, test_batch_size, affine, scaler,
                 forecast_task, dist_side, tau_pinball,
                 n_cheb, twcrps_threshold_low, twcrps_threshold_high, twcrps_side, 
                 twcrps_smooth_h, u_grid_size, dist_loss,
@@ -155,7 +155,7 @@ class TSMixer_forecast(Baseclass_forecast):
                 ):
         super(TSMixer_forecast, self).__init__(
             batch_size=batch_size,
-            test_batch_size=batch_size,
+            test_batch_size=test_batch_size,
             learning_rate=0.0001,
             method=method,
             forecast_task=forecast_task,
@@ -170,7 +170,7 @@ class TSMixer_forecast(Baseclass_forecast):
             dist_loss=dist_loss,
         )
         self.model = Model(seq_len, pred_len, d_model, dropout, n_layers, method, forecast_task, dist_side, 
-                           enc_in, batch_size, affine, scaler, n_cheb,
+                           enc_in, affine, scaler, n_cheb,
                            )
         self.save_hyperparameters()
 

@@ -455,7 +455,7 @@ class Baseclass_forecast(L.LightningModule):
                     smooth_h=twcrps_smooth_h
                 )
         else:
-            self.criterion= self.get_criterion(method, forecast_task, dist_side, tau_pinball)
+            self.criterion= self.get_criterion(forecast_task, dist_side, tau_pinball)
         self.method = method
         self.save_hyperparameters()
 
@@ -631,7 +631,7 @@ class Baseclass_forecast(L.LightningModule):
         optimizer = torch.optim.Adam(self.parameters(), lr=self.learning_rate)
         return optimizer
     
-    def get_criterion(self, method, forecast_task, dist_side, tau_pinball):
+    def get_criterion(self, forecast_task, dist_side, tau_pinball):
         if forecast_task == 'point':
             criterion = nn.MSELoss()
         elif forecast_task == 'quantile':
@@ -640,6 +640,7 @@ class Baseclass_forecast(L.LightningModule):
             criterion = lambda pred, target: pinball_loss_expectile(pred, target, tau_pinball, dist_side)
         else:
             raise ValueError("distribution criterion is created in __init__")
+        return criterion
     
     @staticmethod
     def add_task_specific_args(parent_parser):

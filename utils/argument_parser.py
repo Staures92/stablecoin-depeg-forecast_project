@@ -1,28 +1,9 @@
 import argparse 
-
+from utils.build_dataset import add_dataset_args
 def parse_arguments():
     parser = argparse.ArgumentParser(description='main file arguments')
 
-    dataset_building = parser.add_argument_group('Dataset building arguments')
-    dataset_building.add_argument('--bypass', action='store_true', help='whether to bypass dataset building')
-    dataset_building.add_argument('--dataset_path', type=str, default='./preprocessed_datasets', help='path to save the dataset')
-    dataset_building.add_argument('--alpha', type=float, help='Gegenbauer polynomial alpha parameter', default=0.5)
-    dataset_building.add_argument('--aave',action='store_false', help='remove AAVE metrics')
-    dataset_building.add_argument('--aave_liq',action='store_false', help='remove AAVE liquidations')
-    dataset_building.add_argument('--crv',action='store_false', help='remove Curve 3pool metrics')
-    dataset_building.add_argument('--eth_price',action='store_false', help='remove ETH price oracle')
-    dataset_building.add_argument('--eth_indicators',action='store_false', help='remove ETH price technical indicators')
-    dataset_building.add_argument('--btc_price',action='store_false', help='remove BTC price oracle')
-    dataset_building.add_argument('--btc_indicators',action='store_false', help='remove BTC price technical indicators')
-    dataset_building.add_argument('--fear_greed',action='store_false', help='remove Fear and Greed index')
-    dataset_building.add_argument('--gegen',action='store_false', help='remove Gegenbauer liquidity curve scores')
-    dataset_building.add_argument('--gegen_indicators',action='store_false', help='remove Gegenbauer liquidity curve technical indicators')
-    
-    class_target = parser.add_argument_group('Classification target arguments')
-    class_target.add_argument('-w','--target_window', type=int, default=24, help='time window (in hours) for classification target')
-    class_target.add_argument('-th','--target_threshold', type=int, default=25, help='threshold (in bps) for classification target')
-    class_target.add_argument('-ds','--depeg_side', type=str, default='both', choices=['both', 'up', 'down'], help='depeg side for classification target')
-    class_target.add_argument('-dt','--dynamic_threshold', action='store_true', help='use dynamic threshold for classification target')
+    parser = add_dataset_args(parser)
 
     data = parser.add_argument_group('Data Loading arguments')
     data.add_argument('-b','--build_dataset',action='store_false', help='whether to build the dataset or not')
