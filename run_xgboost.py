@@ -363,7 +363,7 @@ if __name__ == "__main__":
         # ---- shap scatter per top feature ----
         for idx in top10_idx:
             fname = feature_names[idx]
-            shap.plots.scatter(shap_values[:, idx], show=False)
+            shap.plots.scatter(shap_values[:, idx], color = shap_values, show=False)
             plt.title(f"SHAP scatter: {fname}")
             _mlflow_log_current_fig(f"shap_scatter_{fname}.png")
 
