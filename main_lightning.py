@@ -11,8 +11,9 @@ from lightning.pytorch.callbacks import ModelCheckpoint, EarlyStopping, Learning
 from dotenv import load_dotenv
 from lightning.pytorch.tuner import Tuner
 import mlflow
-from models.iTransformer import iTransformer_forecast, iTransformer_classifier
-from models.TSMixer import TSMixer_forecast
+from models.iTransformer import iTransformer_forecast, iTransformer_earlywarning
+from models.TSMixer import TSMixer_forecast, TSMixer_earlywarning
+from models.CNN import CNN_earlywarning
 from utils.argument_parser import parse_arguments
 from utils.build_dataset import build_dataset
 from data_loader.DataModules import DataModule_forecast, DataModule_earlywarning
@@ -37,8 +38,9 @@ if __name__ == "__main__":
         os.environ["MLFLOW_TRACKING_PASSWORD"] = os.getenv("MLFLOW_TRACKING_PASSWORD")
 
     model_dict = {
-        'iTransformer':[iTransformer_forecast, iTransformer_classifier],
-        'TSMixer':[TSMixer_forecast, None]
+        'iTransformer':[iTransformer_forecast, iTransformer_earlywarning],
+        'TSMixer':[TSMixer_forecast, TSMixer_earlywarning],
+        'CNN': [None, CNN_earlywarning]
     }
     if temp_args[0].method == "forecast":
         model = model_dict[temp_args[0].model_name][0]

@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import argparse
-from models.common import RevIN, Baseclass_forecast
+from models.common import RevIN, Baseclass_forecast, Baseclass_earlywarning
 
 class TemporalMixing(nn.Module):
     """
@@ -86,8 +86,8 @@ class MixingLayer(nn.Module):
 
 class Model(nn.Module):
     def __init__(self, seq_len, pred_len, d_model, dropout, n_layers,
-                method, forecast_task, dist_side,
-                enc_in,
+                method, forecast_task, dist_side = None,
+                enc_in = None,
                 affine = True, scaler = 'revin', n_cheb =2):
         super(Model, self).__init__()
         self.n_layers = n_layers
@@ -171,6 +171,43 @@ class TSMixer_forecast(Baseclass_forecast):
         )
         self.model = Model(seq_len, pred_len, d_model, dropout, n_layers, method, forecast_task, dist_side, 
                            enc_in, affine, scaler, n_cheb,
+                           )
+        self.save_hyperparameters()
+
+    @staticmethod
+    def add_model_specific_args(parent_parser):
+        model_parser = parent_parser.add_argument_group('Model-specific arguments')
+        model_parser.add_argument('--d_model', type=int, default=2048)
+        model_parser.add_argument('--dropout', type=float,default=0.1)
+        model_parser.add_argument('--n_layers', type=int, default=3)
+        model_parser.add_argument('--scaler', type=str,default='revin')
+        model_parser.add_argument('--affine', type=int, choices = [0,1], default=1)
+        Baseclass_forecast.add_task_specific_args(parent_parser)
+        return parent_parser
+        
+class TSMixer_earlywarning(Baseclass_earlywarning):
+    def __init__(self, 
+                seq_len, pred_len, d_model, dropout,
+                n_layers, learning_rate,
+                enc_in, method, batch_size, test_batch_size, affine, scaler,
+                forecast_task, 
+                compute_shap, shap_background_size, shap_test_samples,
+                class_loss, focal_alpha, focal_gamma,
+                **kwargs
+                ):
+        super(TSMixer_earlywarning, self).__init__(
+            batch_size= batch_size,
+            test_batch_size= test_batch_size,
+            learning_rate = learning_rate,
+            class_loss= class_loss,
+            compute_shap=compute_shap,
+            shap_background_size=shap_background_size,
+            shap_test_samples=shap_test_samples,
+            focal_alpha= focal_alpha,
+            focal_gamma=focal_gamma,
+        )
+        self.model = Model(seq_len, pred_len, d_model, dropout, n_layers, method, forecast_task, 
+                           enc_in=enc_in, affine=affine, scaler=scaler,
                            )
         self.save_hyperparameters()
 

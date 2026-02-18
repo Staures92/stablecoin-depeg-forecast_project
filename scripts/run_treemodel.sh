@@ -6,7 +6,7 @@ python run_xgboost.py \
     -th 15 \
     -w 24 \
     --remote_logging \
-    --max_depth 6 \
+    --max_depth 8 \
     --n_estimators 1000 \
     --early_stopping_rounds 200 \
     --experiment_name stablecoin_treeclassifier \
@@ -16,3 +16,4 @@ python run_xgboost.py \
     --objective binary:logistic \
 
 done
+python dl_artifacts.py ;

@@ -9,7 +9,10 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pickle as pkl
 from utils.losses import pinball_loss, pinball_loss_expectile
-
+import tempfile
+import shap
+from pathlib import Path
+from sklearn.metrics import roc_auc_score, average_precision_score, confusion_matrix, roc_curve, precision_recall_curve, auc, average_precision_score
 
 class RevIN(nn.Module):
     def __init__(self, num_features: int, eps=1e-5, affine=True, mode = 'revin'):
@@ -78,6 +81,32 @@ class RevIN(nn.Module):
     def robust_statistics(self, x, dim=-1, eps=1e-6):
         return None
 
+class BinaryFocalLoss(nn.Module):
+    def __init__(self, alpha: float = 0.25, gamma: float = 2.0, reduction: str = "mean", eps: float = 1e-6):
+        super().__init__()
+        self.alpha = float(alpha)
+        self.gamma = float(gamma)
+        self.reduction = reduction
+        self.eps = float(eps)
+
+    def forward(self, p: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
+        # p: probabilities in [0,1], y: {0,1}
+        p = p.float().clamp(self.eps, 1.0 - self.eps)
+        y = y.float()
+
+        ce = -(y * torch.log(p) + (1.0 - y) * torch.log(1.0 - p))  # BCE per element
+
+        pt = y * p + (1.0 - y) * (1.0 - p)                          # prob of true class
+        alpha_t = y * self.alpha + (1.0 - y) * (1.0 - self.alpha)
+
+        loss = alpha_t * (1.0 - pt).pow(self.gamma) * ce
+
+        if self.reduction == "mean":
+            return loss.mean()
+        if self.reduction == "sum":
+            return loss.sum()
+        return loss
+    
 class ShapProbWrapper(nn.Module):
     """Wraps a model that outputs probabilities so SHAP sees an nn.Module."""
     def __init__(self, base_model: nn.Module):
@@ -644,7 +673,6 @@ class Baseclass_forecast(L.LightningModule):
     
     @staticmethod
     def add_task_specific_args(parent_parser):
-        # Embedding
         class_parser = parent_parser.add_argument_group('Base class arguments')
         class_parser.add_argument('--forecast_task', type=str, default = 'quantile', choices=['quantile', 'point', 'expectile', 'distribution'], help='quantile, expectile or point forecasting')
         class_parser.add_argument('--dist_side', type=str, default='both', choices=['both', 'up', 'down'], help='side of the distribution to be predicted (for quantile/expectile forecasting)')
@@ -657,4 +685,446 @@ class Baseclass_forecast(L.LightningModule):
         class_parser.add_argument('--twcrps_side', type=str, default='two_sided', choices=['below','above', 'two_sided'])
         class_parser.add_argument('--twcrps_smooth_h', type=float, default=2)
         class_parser.add_argument('--u_grid_size', type=int, default=256)
+        return parent_parser
+
+
+class Baseclass_earlywarning(L.LightningModule):
+    def __init__(self,
+                batch_size, test_batch_size,learning_rate,
+                class_loss,
+                compute_shap, shap_background_size, shap_test_samples,
+                focal_alpha, focal_gamma,
+                **kwargs
+                ):
+        super().__init__()
+        # Save hyperparameters
+        self.learning_rate = learning_rate
+        self.batch_size = batch_size
+        self.test_batch_size = test_batch_size
+
+        self.class_loss = class_loss
+        self.focal_alpha = focal_alpha
+        self.focal_gamma = focal_gamma
+        self.threshold = 0.5 # for validation confusion matrix ; arbitrary
+        self.val_probs, self.val_true = [], []
+        self.test_probs, self.test_true, self.test_seq = [], [], []
+        self.criterion= self.get_criterion(class_loss)
+        self.compute_shap = compute_shap
+        self.shap_background_size = shap_background_size
+        self.shap_test_samples = shap_test_samples
+        self.save_hyperparameters()
+
+    def training_step(self, batch, batch_idx):
+        batch_x, batch_y = batch    
+        batch_x = batch_x.float()
+        batch_y = batch_y.float()
+
+        outputs = self.model(batch_x)
+        loss = self.criterion(outputs, batch_y)
+        self.log('train_loss', loss)
+        return loss
+    
+    def on_validation_epoch_start(self):
+        self.val_probs, self.val_true = [], []
+
+    def validation_step(self, batch, batch_idx):
+        batch_x, batch_y = batch
+        batch_x = batch_x.float()
+        batch_y = batch_y.float()  
+
+        outputs = self.model(batch_x)                  
+        prob, y = self._ensure_1d_prob_and_target(outputs, batch_y)
+
+        loss = self.criterion(prob, y)
+
+        self.val_probs.append(prob.detach().cpu())
+        self.val_true.append(y.detach().cpu())
+
+        self.log("val_loss", loss, prog_bar=True, on_step=False, on_epoch=True)
+        return loss
+
+    def on_validation_epoch_end(self):
+        if len(self.val_true) == 0:
+            return
+
+        y_true = torch.cat(self.val_true).numpy()
+        y_prob = torch.cat(self.val_probs).numpy()
+
+        auc, auprc = self._safe_auc_auprc(y_true, y_prob)
+        self.log("val_auc", auc, prog_bar=True, on_step=False, on_epoch=True)
+        self.log("val_auprc", auprc, prog_bar=True, on_step=False, on_epoch=True)
+
+        y_pred = (y_prob >= self.threshold).astype(int)
+
+        with tempfile.TemporaryDirectory() as td:
+            cm_path = os.path.join(td, "val_confusion_matrix.png")
+            self._plot_confusion_matrix(
+                y_true=y_true.astype(int),
+                y_pred=y_pred,
+                title=f"Val Confusion Matrix (thr={self.threshold:.2f})",
+                out_path=cm_path
+            )
+            self._mlflow_log_artifact(cm_path, artifact_path="validation")
+
+    def _shap_forward(self, x: torch.Tensor) -> torch.Tensor:
+        out = self.model(x.float())  # already probabilities
+        if out.ndim == 1:
+            out = out.unsqueeze(1)
+        elif out.ndim == 2 and out.shape[1] != 1:
+            # if ever multi-class, you'd handle differently
+            out = out[:, :1]
+        return out
+    
+    def _log_shap_on_test(self):
+        if not self.trainer.is_global_zero:
+            return
+        if len(getattr(self, "test_seq", [])) == 0:
+            return
+
+        X_test = torch.cat(self.test_seq, dim=0)  # (N, seq_len, n_features)
+        n_test = X_test.shape[0]
+
+        n_eval = min(self.shap_test_samples, n_test)
+        n_bg   = min(self.shap_background_size, n_test)
+
+        idx = torch.randperm(n_test)[:n_eval]
+        bg_idx = torch.randperm(n_test)[:n_bg]
+
+        X_eval = X_test[idx]
+        X_bg   = X_test[bg_idx]
+
+        device = next(self.model.parameters()).device
+        X_eval = X_eval.to(device)
+        X_bg   = X_bg.to(device)
+
+        shap_model = ShapProbWrapper(self.model).to(device)
+        shap_model.eval()
+
+        # IMPORTANT: ensure autograd works even if Lightning uses inference_mode=True
+        with torch.inference_mode(False), torch.enable_grad():
+            explainer = shap.GradientExplainer(shap_model, X_bg)
+            shap_values = explainer.shap_values(X_eval)
+
+        # shap_values can be either an array or a list of arrays (one per output)
+        if isinstance(shap_values, list):
+            shap_arr = shap_values[0]
+        else:
+            shap_arr = shap_values
+
+        X_eval_cpu = X_eval.detach().cpu().numpy()
+        idx_cpu = idx.detach().cpu().numpy()
+
+        with tempfile.TemporaryDirectory() as td:
+            td = Path(td)
+
+            npz_path = td / "shap_test_subset.npz"
+            np.savez_compressed(
+                npz_path,
+                shap_values=shap_arr,   # typically (B, seq_len, n_features)
+                x_eval=X_eval_cpu,
+                test_indices=idx_cpu
+            )
+            self._mlflow_log_artifact(str(npz_path), artifact_path="test/shap")
+
+            # Optional: summary plot (aggregate over time -> (B, n_features))
+            shap_agg = np.abs(shap_arr).mean(axis=1)  # mean over seq_len
+            x_agg = X_eval_cpu.mean(axis=1)
+
+            plt.figure(figsize=(8, 4), dpi=150)
+            shap.summary_plot(shap_agg, features=x_agg, show=False)
+            fig_path = td / "shap_summary_mean_over_time.png"
+            plt.tight_layout()
+            plt.savefig(fig_path)
+            plt.close()
+
+            self._mlflow_log_artifact(str(fig_path), artifact_path="test/shap")
+
+    def on_test_epoch_start(self):
+        self.test_probs, self.test_true, self.test_seq = [], [], []
+        self.test_price_next = []
+
+    def test_step(self, batch, batch_idx):
+        batch_x, batch_y2 = batch
+        batch_x = batch_x.float()
+        y_target = batch_y2[:,0].float()
+        price_next = batch_y2[:,1].float()
+
+        outputs = self.model(batch_x)                  # probs
+        prob, y = self._ensure_1d_prob_and_target(outputs, y_target)
+
+        loss = self.criterion(prob, y)
+
+        self.test_probs.append(prob.detach().cpu())
+        self.test_true.append(y.detach().cpu())
+        self.test_seq.append(batch_x.detach().cpu())   
+        self.test_price_next.append(price_next.detach().cpu())
+
+        self.log("test_loss", loss, prog_bar=True, on_step=False, on_epoch=True)
+        return loss
+
+    def on_test_epoch_end(self):
+        if len(self.test_true) == 0:
+            return
+
+        y_true = torch.cat(self.test_true).numpy()
+        y_prob = torch.cat(self.test_probs).numpy()
+        x_seq = torch.cat(self.test_seq, dim=0).numpy()
+        price_next = torch.cat(self.test_price_next).numpy()
+        best_thr = self._best_threshold_from_roc(y_true, y_prob, default=self.threshold)
+        self.log("test_best_threshold_roc", best_thr, prog_bar=True, on_step=False, on_epoch=True)
+
+        y_pred = (y_prob >= best_thr).astype(int)
+
+        auc, auprc = self._safe_auc_auprc(y_true, y_prob)
+        self.log("test_auc", auc, prog_bar=True, on_step=False, on_epoch=True)
+        self.log("test_auprc", auprc, prog_bar=True, on_step=False, on_epoch=True)
+
+
+        payload = {
+            "true": y_true,
+            "prob": y_prob,
+            "pred": y_pred,
+            "seq": x_seq,  
+            "price_next": price_next,
+            "threshold": best_thr,
+        }
+
+        with tempfile.TemporaryDirectory() as td:
+            td = Path(td)
+
+            pkl_path = td / "preds_test_set.pkl"
+            with open(pkl_path, "wb") as f:
+                pkl.dump(payload, f)
+
+            cm_path = td / "test_confusion_matrix.png"
+            self._plot_confusion_matrix(
+                y_true=y_true.astype(int),
+                y_pred=y_pred,
+                title=f"Test Confusion Matrix (thr={best_thr:.2f})",
+                out_path=str(cm_path)
+            )
+
+            self._mlflow_log_artifact(str(pkl_path), artifact_path="test")
+            self._mlflow_log_artifact(str(cm_path), artifact_path="test")
+            
+            timeline_path = td / "test_prob_next_price_timeline.png"
+            self._plot_test_prob_price_through_time(
+                y_prob=y_prob,
+                y_true=y_true,
+                price_next=price_next,
+                threshold = best_thr,
+                out_path=str(timeline_path),
+            )
+
+            roc_path = td / "test_roc.png"
+            pr_path  = td / "test_precision_recall.png"
+            self._plot_roc_pr_curves(y_true, y_prob, str(roc_path), str(pr_path))
+
+            self._mlflow_log_artifact(str(timeline_path), artifact_path="test")
+            self._mlflow_log_artifact(str(roc_path), artifact_path="test")
+            self._mlflow_log_artifact(str(pr_path), artifact_path="test")
+        
+        if self.compute_shap:
+            try:
+                self._log_shap_on_test()
+            except Exception as e:
+                print(f"----- Error computing SHAP values on test set: {e} -----")
+    
+    def predict_step(self, batch, batch_idx):
+        return self.model(batch)
+    
+    def forward(self, batch, batch_idx):
+        return self.model(batch)
+    
+    def configure_optimizers(self):
+        optimizer = torch.optim.Adam(self.parameters(), lr=self.learning_rate)
+        return optimizer
+    
+    def get_criterion(self, class_loss):
+        if class_loss == 'bce':
+            criterion = nn.BCELoss()
+        elif class_loss == 'focal':
+            alpha = self.focal_alpha
+            gamma = self.focal_gamma
+            return BinaryFocalLoss(alpha=alpha, gamma=gamma, reduction="mean")
+        else:
+            raise ValueError(f"Unknown class_loss: {class_loss}")
+
+        return criterion
+    
+    def _ensure_1d_prob_and_target(self, outputs: torch.Tensor, batch_y: torch.Tensor):
+        """
+        outputs: probs from model, expected shape (B,) or (B,1)
+        batch_y: shape (B,)
+        returns: (prob_1d, y_1d) both float tensors on same device
+        """
+        prob = outputs
+        if prob.ndim > 1:
+            prob = prob.squeeze(-1)
+        prob = prob.float().clamp(0.0, 1.0)
+
+        y = batch_y
+        if y.ndim > 1:
+            y = y.squeeze(-1)
+        y = y.float()
+        return prob, y
+
+
+    def _safe_auc_auprc(self, y_true: np.ndarray, y_prob: np.ndarray):
+        # AUC/AUPRC undefined if only one class present
+        try:
+            auc = roc_auc_score(y_true, y_prob)
+        except Exception:
+            auc = np.nan
+        try:
+            auprc = average_precision_score(y_true, y_prob)
+        except Exception:
+            auprc = np.nan
+        return auc, auprc
+
+
+    def _plot_confusion_matrix(self, y_true: np.ndarray, y_pred: np.ndarray, title: str, out_path: str):
+        cm = confusion_matrix(y_true, y_pred, labels=[0, 1])
+        fig, ax = plt.subplots(figsize=(4, 4), dpi=150)
+        im = ax.imshow(cm, interpolation="nearest", cmap=plt.cm.Blues)
+        ax.figure.colorbar(im, ax=ax)
+        ax.set(
+            xticks=[0, 1], yticks=[0, 1],
+            xticklabels=["0", "1"], yticklabels=["0", "1"],
+            xlabel="Predicted", ylabel="True", title=title
+        )
+
+        thresh = cm.max() / 2.0 if cm.max() > 0 else 0.0
+        for i in range(2):
+            for j in range(2):
+                ax.text(j, i, int(cm[i, j]),
+                        ha="center", va="center",
+                        color="white" if cm[i, j] > thresh else "black")
+        fig.tight_layout()
+        fig.savefig(out_path)
+        plt.close(fig)
+
+    
+    def _best_threshold_from_roc(self, y_true: np.ndarray, y_prob: np.ndarray, default: float = 0.5) -> float:
+        try:
+            fpr, tpr, thr = roc_curve(y_true.astype(int), y_prob)
+
+            # roc_curve often includes thr[0] = inf; exclude non-finite thresholds
+            m = np.isfinite(thr)
+            if m.sum() == 0:
+                return float(default)
+
+            fpr, tpr, thr = fpr[m], tpr[m], thr[m]
+            j = tpr - fpr
+            best_idx = int(np.argmax(j))
+            return float(thr[best_idx])
+        except Exception:
+            return float(default)
+        
+    def _plot_test_prob_price_through_time(
+        self,
+        y_prob: np.ndarray,
+        y_true: np.ndarray,
+        price_next: np.ndarray,
+        out_path: str,
+        threshold: float,
+        max_points: int = 5000,
+    ):
+        N = len(y_prob)
+        if N == 0:
+            return
+
+        # downsample if needed
+        if N > max_points:
+            idx = np.linspace(0, N - 1, max_points).astype(int)
+            t = idx
+            y_prob = y_prob[idx]
+            y_true = y_true[idx]
+            price_next = price_next[idx]
+        else:
+            t = np.arange(N)
+
+        fig, ax1 = plt.subplots(figsize=(12, 4), dpi=150)
+
+        ax1.plot(t, y_prob, color="royalblue", lw=1.5, label="Pred prob")
+        ax1.axhline(threshold, color="cornflowerblue", ls="--", lw=1, alpha=0.6,
+                    label=f"thr={self.threshold:.2f}")
+        ax1.set_ylim(-0.02, 1.02)
+        ax1.set_ylabel("P(event)", color="royalblue")
+        ax1.tick_params(axis="y", labelcolor="royalblue")
+
+        mask = (y_true.astype(int) == 1)
+        if mask.any():
+            ax1.scatter(t[mask], y_prob[mask], s=18, color="red", zorder=5, label="True = 1")
+            for tt in t[mask]:
+                ax1.axvline(tt, color="red", alpha=0.08, lw=1)
+
+        ax1.set_xlabel("Test sample index (order in dataloader)")
+        ax1.set_title("Test predicted probability through time + NEXT price overlay")
+
+        ax2 = ax1.twinx()
+        ax2.plot(t, price_next, color="black", alpha=0.35, lw=1.0, label="Next price")
+        ax2.set_ylabel("Next price", color="black")
+        ax2.tick_params(axis="y", labelcolor="black")
+
+        h1, l1 = ax1.get_legend_handles_labels()
+        h2, l2 = ax2.get_legend_handles_labels()
+        ax1.legend(h1 + h2, l1 + l2, loc="upper left", frameon=True)
+
+        fig.tight_layout()
+        fig.savefig(out_path)
+        plt.close(fig)
+
+
+    def _plot_roc_pr_curves(self, y_true: np.ndarray, y_prob: np.ndarray, roc_path: str, pr_path: str):
+        y_true = y_true.astype(int)
+
+        # ROC
+        try:
+            fpr, tpr, _ = roc_curve(y_true, y_prob)
+            roc_auc = auc(fpr, tpr)
+            fig = plt.figure(figsize=(5, 4), dpi=150)
+            plt.plot(fpr, tpr, lw=2, label=f"AUC={roc_auc:.3f}")
+            plt.plot([0, 1], [0, 1], "k--", lw=1)
+            plt.xlabel("False Positive Rate")
+            plt.ylabel("True Positive Rate")
+            plt.title("ROC (test)")
+            plt.legend(loc="lower right")
+            plt.tight_layout()
+            plt.savefig(roc_path)
+            plt.close(fig)
+        except Exception as e:
+            print(f"[WARN] ROC curve not plotted: {e}")
+
+        # Precision-Recall
+        try:
+            precision, recall, _ = precision_recall_curve(y_true, y_prob)
+            ap = average_precision_score(y_true, y_prob)
+            fig = plt.figure(figsize=(5, 4), dpi=150)
+            plt.plot(recall, precision, lw=2, label=f"AP={ap:.3f}")
+            plt.xlabel("Recall")
+            plt.ylabel("Precision")
+            plt.title("Precision–Recall (test)")
+            plt.legend(loc="lower left")
+            plt.tight_layout()
+            plt.savefig(pr_path)
+            plt.close(fig)
+        except Exception as e:
+            print(f"[WARN] PR curve not plotted: {e}")
+
+    def _mlflow_log_artifact(self, local_path: str, artifact_path: str):
+        # only log once in DDP
+        if not self.trainer.is_global_zero:
+            return
+        self.logger.experiment.log_artifact(self.logger.run_id, local_path, artifact_path=artifact_path)
+
+    @staticmethod
+    def add_task_specific_args(parent_parser):
+        early_warning = parent_parser.add_argument_group('Base early warning class arguments')
+        early_warning.add_argument('--class_loss', type=str, default='bce', choices=['bce', 'focal'], help='loss function for classification task')
+        early_warning.add_argument('--focal_alpha', type=float, default=0.25, help='alpha parameter for focal loss function for classification task')
+        early_warning.add_argument('--focal_gamma', type=float, default=2.0, help='gamma parameter for focal loss function for classification task')
+        early_warning.add_argument('--compute_shap', type=int, choices=[0,1], default=0, help='whether to compute SHAP values at test time')
+        early_warning.add_argument('--shap_background_size', type=int, default=64, help='number of background samples for SHAP')
+        early_warning.add_argument('--shap_test_samples', type=int, default=256, help='number of test samples to compute SHAP values for (keep small; SHAP can be expensive)')
         return parent_parser
